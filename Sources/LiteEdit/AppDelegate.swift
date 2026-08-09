@@ -3,6 +3,9 @@ import AppKit
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var windowControllers: [MainWindowController] = []
     private var recentMenu: NSMenu!
+    private var terminalMenu: NSMenu!
+    private var terminalItem: NSMenuItem!
+    private var fileMenu: NSMenu!
 
     private static let sessionWindowsKey = "SessionWindows"
 
@@ -176,7 +179,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // File menu
         let fileItem = NSMenuItem()
-        let fileMenu = NSMenu(title: "File")
+        fileMenu = NSMenu(title: "File")
+        fileMenu.delegate = self
+        // Enablement here is decided in updateTerminalItem, not by AppKit.
+        // With auto-enabling on, "Open in Terminal" is disabled the moment it
+        // carries a submenu instead of an action — which disables the submenu
+        // with it, so the entries render but cannot be clicked.
+        fileMenu.autoenablesItems = false
         fileMenu.addItem(item("New File", #selector(doNew), "n"))
         fileMenu.addItem(item("New Window", #selector(doNewWindow), "N"))
         fileMenu.addItem(item("Open...", #selector(doOpen), "o"))
@@ -188,6 +197,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let recentItem = NSMenuItem(title: "Open Recent", action: nil, keyEquivalent: "")
         recentItem.submenu = recentMenu
         fileMenu.addItem(recentItem)
+
+        fileMenu.addItem(.separator())
+
+        // Fires directly for a single-root project; grows a submenu listing
+        // every root when a multi-root workspace is open. Both are decided in
+        // menuNeedsUpdate so the menu always reflects the current window.
+        terminalItem = NSMenuItem(title: "Open in Terminal",
+                                  action: #selector(doOpenInTerminal), keyEquivalent: "T")
+        terminalItem.target = self
+        terminalMenu = NSMenu(title: "Open in Terminal")
+        terminalMenu.delegate = self
+        // Items are built fresh in menuNeedsUpdate and are always actionable;
+        // leaving auto-enabling on left every one of them greyed out.
+        terminalMenu.autoenablesItems = false
+        fileMenu.addItem(terminalItem)
 
         fileMenu.addItem(.separator())
         fileMenu.addItem(item("Save", #selector(doSave), "s"))
@@ -248,6 +272,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - NSMenuDelegate (Open Recent)
 
     func menuNeedsUpdate(_ menu: NSMenu) {
+        if menu === fileMenu { updateTerminalItem(); return }
+        if menu === terminalMenu { populateTerminalMenu(menu); return }
         guard menu === recentMenu else { return }
         menu.removeAllItems()
 
@@ -335,10 +361,80 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         RecentItems.clearAll()
     }
 
+    // MARK: - Open in Terminal
+
+    /// One root opens straight from the menu item; several turn it into a
+    /// submenu so the target is chosen explicitly. An item carrying a submenu
+    /// cannot also fire an action, so the two are mutually exclusive.
+    private func updateTerminalItem() {
+        let roots = activeWindowController?.projectRoots ?? []
+        terminalItem.isEnabled = !roots.isEmpty
+        if roots.count > 1 {
+            terminalItem.submenu = terminalMenu
+            terminalItem.action = nil
+        } else {
+            terminalItem.submenu = nil
+            terminalItem.action = #selector(doOpenInTerminal)
+            terminalItem.target = self
+        }
+    }
+
+    private func populateTerminalMenu(_ menu: NSMenu) {
+        menu.removeAllItems()
+        for url in activeWindowController?.projectRoots ?? [] {
+            let mi = NSMenuItem(title: url.lastPathComponent,
+                                action: #selector(openTerminalAtRoot(_:)), keyEquivalent: "")
+            mi.target = self
+            mi.toolTip = url.path
+            mi.representedObject = url
+            mi.isEnabled = true
+            menu.addItem(mi)
+        }
+    }
+
+    @objc private func doOpenInTerminal() {
+        guard let url = activeWindowController?.projectRoots.first else { return }
+        launchTerminal(at: url)
+    }
+
+    @objc private func openTerminalAtRoot(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        launchTerminal(at: url)
+    }
+
+    /// A terminal that silently fails to appear is near-impossible to diagnose,
+    /// so the command and its exit status are shown rather than swallowed.
+    private func launchTerminal(at url: URL) {
+        do {
+            try TerminalLauncher.open(directory: url)
+        } catch {
+            let alert = NSAlert()
+            alert.messageText = "Could not open a terminal"
+            switch error {
+            case TerminalLauncher.LaunchError.failed(let command, let status):
+                alert.informativeText = "The command exited with status \(status):\n\n\(command)\n\n"
+                    + "Change it with:\ndefaults write com.liteedit.app \(TerminalLauncher.defaultsKey) -string '<command>'"
+            case TerminalLauncher.LaunchError.notRun(let command, let underlying):
+                alert.informativeText = "\(underlying)\n\n\(command)"
+            default:
+                alert.informativeText = error.localizedDescription
+            }
+            alert.addButton(withTitle: "OK")
+            if let w = activeWindowController?.window {
+                alert.beginSheetModal(for: w, completionHandler: nil)
+            } else {
+                alert.runModal()
+            }
+        }
+    }
+
     // MARK: - Actions
 
     @objc func doNew()           { ensureWindowControllerReady().newDocument() }
     @objc func doNewWindow()     { makeWindow() }
+}
+
+extension AppDelegate {
     @objc func doOpen()          { ensureWindowControllerReady().openDocument() }
     @objc func doOpenFolder()    { ensureWindowControllerReady().openFolder() }
     @objc func doOpenWorkspace() { ensureWindowControllerReady().openWorkspace() }

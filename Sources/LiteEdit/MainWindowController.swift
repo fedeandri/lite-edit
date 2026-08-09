@@ -66,6 +66,10 @@ final class MainWindowController: NSWindowController,
         installKeyMonitor()
     }
 
+    /// The folder roots this window is showing: one for a plain folder, one per
+    /// `folders[]` entry for a workspace, empty when only files are open.
+    var projectRoots: [URL] { sidebarVC.rootFolderURLs }
+
     /// Identifies what this window has open, for spotting a second request to
     /// open the same thing. Nil when only loose files are open.
     ///

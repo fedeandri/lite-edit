@@ -122,6 +122,45 @@ Each was invisible in the single-window design and would have surfaced immediate
   `setFrameAutosaveName("MainWindow")` and they fought over the same stored rect.
   Only the first window uses the saved frame; the rest cascade off the previous one.
 
+## Open in Terminal
+
+`File → Open in Terminal` (`Cmd+Shift+T`) launches a terminal at the project root.
+One root fires straight from the menu item; a multi-root workspace turns the item into
+a submenu listing every root, built in `menuNeedsUpdate` so it always reflects the
+window in front. The item is disabled when no project is open.
+
+The command is a single `UserDefaults` string, since the app has no preferences UI:
+
+```sh
+defaults write com.liteedit.app TerminalCommand -string \
+  'open -na Ghostty --args --working-directory={dir} --title={name}'
+```
+
+That is also the built-in default, so it works untouched. `{dir}` and `{name}` are
+substituted **shell-quoted** (`'` becomes `'\''`), so a path containing a space,
+an apostrophe or a `;` cannot break the command or append another one. The result runs
+through `/bin/sh -c`, so pipes and `&&` behave as written. This makes `TerminalCommand`
+executable configuration — the same trust level as a shell alias, but not inert data.
+
+Ghostty specifically requires this shape. Its CLI refuses to start the emulator
+(*"On macOS, launching the terminal emulator from the CLI is not supported"*), its
+`+new-window` action answers *"not supported on this platform"*, and `open -a Ghostty
+<dir>` merely activates the existing instance despite Ghostty declaring a
+`public.directory` type. `open -na … --args --working-directory=` is what works.
+
+### The menu-enablement trap
+
+`NSMenu.autoenablesItems` defaults to true, and under it an item that carries a
+**submenu instead of an action is disabled** — which disables every entry inside it.
+The entries render with the right titles and simply do nothing when clicked, with no
+error anywhere. `fileMenu.autoenablesItems` and `terminalMenu.autoenablesItems` are
+therefore both false, and `updateTerminalItem()` sets `isEnabled` explicitly.
+
+Diagnosing this from the outside is misleading: AppleScript reports the submenu items'
+`enabled` as `false` while the code that built them set `isEnabled = true`, which reads
+like an AX bug rather than a real one. What settles it is instrumenting the action
+itself — if the handler never logs, the click never dispatched.
+
 ## Session persistence
 
 `SessionWindows` is an array with one dictionary per open window — its workspace *or*
