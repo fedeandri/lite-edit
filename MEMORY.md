@@ -35,12 +35,20 @@ Fork additions live in `Sources/LiteEdit/Workspace.swift` (new) and in changes t
 - TabBarView exposes `setTabs(_:selectedIndex:)` (smart rebuild), `selectTab(at:)` (appearance only), `updateTab(at:item:)` (single tab label). Hot paths (tab click, keystroke) use targeted methods; structural changes (open/close tab) use `setTabs`.
 
 ## Known Issues & TODOs
+- **Fork, unverified interactively** (wired and compiling, exercised only by code path): Quick Open prefixing hits with the root folder name in a multi-root window; right-click a `.code-workspace` inside the file tree → Open Workspace; new-window placement landing on the Space the double-click came from.
+- **Fork:** a folder and its own `.code-workspace` file count as two different projects, so both can be open in separate windows at once. Identity is the opened path, and a human would call them the same project. Not yet decided whether that is worth collapsing.
+- **Fork:** `TerminalCommand` is executable configuration run through `/bin/sh -c`. Values are shell-quoted so paths cannot inject, but the setting itself is trusted by design — the same trust level as a shell alias.
+- **Fork:** a window whose saved workspace has since been deleted restores **empty** rather than reporting anything. Harmless, but a stale session can produce blank windows.
 - Auto-indent is whitespace-matching only; no smart indent (e.g. increase after `{`)
 - Markdown fenced code blocks may still lose highlighting when editing deep inside them (visible-range rehighlight helps but multi-page code blocks can exceed the viewport)
 - Large files (> 100k chars) use lazy viewport-only highlighting; text outside the viewport + buffer stays unhighlighted until scrolled to
 - Landing page: merged into awesome-mac (101k+ stars); remaining enhancement ideas: animated demo GIF/video, real cold-start benchmarks, honest "Not for you if..." section, mobile hamburger nav, JSON-LD structured data
 
 ## Key Files & Patterns
+- `Sources/LiteEdit/Workspace.swift` — **fork**: `.code-workspace` parsing, JSONC comment/trailing-comma stripping, folder resolution
+- `Sources/LiteEdit/TerminalLauncher.swift` — **fork**: `TerminalCommand` default, `{dir}`/`{name}` shell-quoted substitution, `/bin/sh -c` execution
+- `Sources/LiteEdit/AppDelegate.swift` — **fork**: multi-window management (`windowControllers`, `windowFor(project:)`, `makeWindow()`), the `handleOpen(_:)` routing funnel, menu construction including the Open in Terminal submenu
+- `docs/workspaces-and-windows.md` — **fork**: full design record; read before changing project opening, window placement, or menus
 - `Sources/LiteEdit/EditorViewController.swift` — main text view, delegate, find/replace, auto-indent
 - `Sources/LiteEdit/EditorViewController+Shortcuts.swift` — line move, delete, multi-cursor edit
 - `Sources/LiteEdit/SyntaxHighlighter.swift` — regex-based highlighting for 20+ languages
