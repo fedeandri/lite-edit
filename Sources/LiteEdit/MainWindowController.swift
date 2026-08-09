@@ -26,12 +26,22 @@ final class MainWindowController: NSWindowController,
     /// it. Nil whenever a plain folder is showing.
     private(set) var workspaceURL: URL?
 
+    /// Set by the app delegate. Every request to open a *project* — a folder or
+    /// a workspace — goes through here so window placement is decided in one
+    /// place, whether it came from a double-click, a menu, or the file tree.
+    var openProjectHandler: ((URL) -> Void)?
+
     private var curDoc: Document? {
         guard curIdx >= 0, curIdx < documents.count else { return nil }
         return documents[curIdx]
     }
 
-    convenience init() {
+    /// - Parameter cascadingFrom: when given, the new window is sized like that
+    ///   window and offset down-right from it, so a second workspace is visibly
+    ///   a second window rather than one exactly covering the other. Only the
+    ///   first window uses the saved frame — sharing one autosave name across
+    ///   windows makes them fight over the same stored rect.
+    convenience init(cascadingFrom previous: NSWindow? = nil) {
         let w = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -40,14 +50,40 @@ final class MainWindowController: NSWindowController,
         w.minSize = NSSize(width: 640, height: 420)
         w.title = "LiteEdit"
         w.isReleasedWhenClosed = false
-        if !w.setFrameUsingName("MainWindow") { w.center() }
-        w.setFrameAutosaveName("MainWindow")
+
+        if let prev = previous {
+            w.setContentSize(prev.contentRect(forFrameRect: prev.frame).size)
+            _ = w.cascadeTopLeft(from: NSPoint(x: prev.frame.minX, y: prev.frame.maxY))
+        } else {
+            if !w.setFrameUsingName("MainWindow") { w.center() }
+            w.setFrameAutosaveName("MainWindow")
+        }
         w.backgroundColor = Theme.background
 
         self.init(window: w)
         buildUI()
         newDocument()
         installKeyMonitor()
+    }
+
+    /// Identifies what this window has open, for spotting a second request to
+    /// open the same thing. Nil when only loose files are open.
+    ///
+    /// Symlinks are resolved because the two sides genuinely disagree: an
+    /// Apple Event from a double-click delivers `/tmp/…` while a path that has
+    /// been through the session store is `/private/tmp/…`. `standardizedFileURL`
+    /// alone does not reconcile them — it never resolves symlinks.
+    var openRootIdentity: String? {
+        (workspaceURL ?? sidebarVC.rootFolderURL)?.resolvingSymlinksInPath().standardizedFileURL.path
+    }
+
+    /// A window that has never been used: no folder, no workspace, and nothing
+    /// but the empty scratch tab. Reused instead of opening yet another window.
+    var isUnusedScratch: Bool {
+        guard workspaceURL == nil, sidebarVC.rootFolderURL == nil else { return false }
+        guard documents.count <= 1 else { return false }
+        guard let doc = documents.first else { return true }
+        return doc.fileURL == nil && !doc.isModified && doc.content.isEmpty
     }
 
     deinit {
@@ -57,6 +93,9 @@ final class MainWindowController: NSWindowController,
     private func installKeyMonitor() {
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self = self else { return event }
+            // The monitor is app-wide, so every window installs one. Without
+            // this guard Cmd+P would fire Quick Open in all of them at once.
+            guard event.window === self.window else { return event }
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             if flags == .command, event.charactersIgnoringModifiers == "p" {
                 self.showQuickOpen()
@@ -320,8 +359,8 @@ final class MainWindowController: NSWindowController,
         p.canChooseFiles = false
         p.allowsMultipleSelection = false
         p.beginSheetModal(for: window!) { [weak self] r in
-            guard r == .OK, let url = p.url else { return }
-            self?.showSidebarAndOpen(url)
+            guard r == .OK, let url = p.url, let self = self else { return }
+            if let route = self.openProjectHandler { route(url) } else { self.showSidebarAndOpen(url) }
         }
     }
 
@@ -355,6 +394,7 @@ final class MainWindowController: NSWindowController,
         p.allowsMultipleSelection = false
         p.beginSheetModal(for: window!) { [weak self] r in
             guard r == .OK, let url = p.url, let self = self else { return }
+            if let route = self.openProjectHandler { route(url); return }
             if !self.openWorkspaceDirect(url) {
                 let a = NSAlert()
                 a.messageText = "Not a Workspace"
@@ -548,6 +588,7 @@ final class MainWindowController: NSWindowController,
     }
 
     func sidebarDidRequestOpenWorkspace(_ url: URL) {
+        if let route = openProjectHandler { route(url); return }
         if !openWorkspaceDirect(url) {
             let a = NSAlert()
             a.messageText = "Not a Workspace"
@@ -593,15 +634,19 @@ final class MainWindowController: NSWindowController,
     private static let sessionCursorsKey = "SessionCursors"
     private static let sessionZoomedKey  = "SessionWindowZoomed"
 
-    func saveSession() {
+    /// What this window is showing, as plist-safe values. One of these per open
+    /// window is stored, so every window comes back on the next launch.
+    func sessionState() -> [String: Any] {
         saveCursorPosition()
-        let ud = UserDefaults.standard
-        // Exactly one of the two is stored: a workspace supersedes its folders,
-        // otherwise the single open folder is saved. `set(nil:)` clears the other.
-        ud.set(workspaceURL?.path, forKey: Self.sessionWorkspaceKey)
-        ud.set(workspaceURL == nil ? sidebarVC.rootFolderURL?.path : nil, forKey: Self.sessionFolderKey)
-        ud.set(documents.compactMap { $0.fileURL?.path }, forKey: Self.sessionFilesKey)
-        ud.set(curIdx, forKey: Self.sessionIndexKey)
+        var state: [String: Any] = [:]
+        // Exactly one of the two: a workspace supersedes the folders it lists.
+        if let ws = workspaceURL?.path {
+            state[Self.sessionWorkspaceKey] = ws
+        } else if let folder = sidebarVC.rootFolderURL?.path {
+            state[Self.sessionFolderKey] = folder
+        }
+        state[Self.sessionFilesKey] = documents.compactMap { $0.fileURL?.path }
+        state[Self.sessionIndexKey] = curIdx
 
         var cursors: [String: Int] = [:]
         for doc in documents {
@@ -609,15 +654,29 @@ final class MainWindowController: NSWindowController,
                 cursors[path] = doc.cursorPosition
             }
         }
-        ud.set(cursors, forKey: Self.sessionCursorsKey)
-        ud.set(window?.isZoomed ?? false, forKey: Self.sessionZoomedKey)
+        state[Self.sessionCursorsKey] = cursors
+        state[Self.sessionZoomedKey] = window?.isZoomed ?? false
+        return state
     }
 
+    /// Restores from the flat UserDefaults keys written by versions before
+    /// multi-window support. Only used when no per-window list is present.
     func restoreSession() {
         let ud = UserDefaults.standard
-        let folderPath    = ud.string(forKey: Self.sessionFolderKey)
-        let workspacePath = ud.string(forKey: Self.sessionWorkspaceKey)
-        let filePaths  = (ud.stringArray(forKey: Self.sessionFilesKey) ?? [])
+        var legacy: [String: Any] = [:]
+        if let v = ud.string(forKey: Self.sessionWorkspaceKey) { legacy[Self.sessionWorkspaceKey] = v }
+        if let v = ud.string(forKey: Self.sessionFolderKey)    { legacy[Self.sessionFolderKey] = v }
+        legacy[Self.sessionFilesKey]   = ud.stringArray(forKey: Self.sessionFilesKey) ?? []
+        legacy[Self.sessionIndexKey]   = ud.integer(forKey: Self.sessionIndexKey)
+        legacy[Self.sessionCursorsKey] = ud.dictionary(forKey: Self.sessionCursorsKey) as? [String: Int] ?? [:]
+        legacy[Self.sessionZoomedKey]  = ud.bool(forKey: Self.sessionZoomedKey)
+        restore(from: legacy)
+    }
+
+    func restore(from state: [String: Any]) {
+        let folderPath    = state[Self.sessionFolderKey] as? String
+        let workspacePath = state[Self.sessionWorkspaceKey] as? String
+        let filePaths  = (state[Self.sessionFilesKey] as? [String] ?? [])
             .filter { FileManager.default.fileExists(atPath: $0) }
 
         guard workspacePath != nil || folderPath != nil || !filePaths.isEmpty else { return }
@@ -643,14 +702,14 @@ final class MainWindowController: NSWindowController,
             if curIdx >= documents.count { curIdx = documents.count - 1 }
         }
 
-        let cursors = ud.dictionary(forKey: Self.sessionCursorsKey) as? [String: Int] ?? [:]
+        let cursors = state[Self.sessionCursorsKey] as? [String: Int] ?? [:]
         for doc in documents {
             if let path = doc.fileURL?.path, let pos = cursors[path] {
                 doc.cursorPosition = pos
             }
         }
 
-        let savedIdx = ud.integer(forKey: Self.sessionIndexKey)
+        let savedIdx = state[Self.sessionIndexKey] as? Int ?? 0
         curIdx = max(0, min(savedIdx, documents.count - 1))
         if curIdx < documents.count {
             editorVC.document = documents[curIdx]
@@ -666,7 +725,7 @@ final class MainWindowController: NSWindowController,
             if let url = self?.curDoc?.fileURL {
                 self?.sidebarVC.revealFile(url)
             }
-            if ud.bool(forKey: Self.sessionZoomedKey), !(self?.window?.isZoomed ?? true) {
+            if (state[Self.sessionZoomedKey] as? Bool ?? false), !(self?.window?.isZoomed ?? true) {
                 self?.window?.zoom(nil)
             }
         }

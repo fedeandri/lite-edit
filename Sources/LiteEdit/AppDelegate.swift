@@ -1,36 +1,90 @@
 import AppKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
-    private var windowController: MainWindowController?
+    private var windowControllers: [MainWindowController] = []
     private var recentMenu: NSMenu!
+
+    private static let sessionWindowsKey = "SessionWindows"
+
+    /// Drops controllers whose window has been closed. Called before anything
+    /// that reasons about "the open windows".
+    private func pruneClosedWindows() {
+        windowControllers.removeAll { $0.window == nil }
+    }
+
+    /// The window a menu command or a loose file should act on: the key window,
+    /// then the main window, then the most recently created one.
+    private var activeWindowController: MainWindowController? {
+        pruneClosedWindows()
+        if let key = NSApp.keyWindow,
+           let wc = windowControllers.first(where: { $0.window === key }) { return wc }
+        if let main = NSApp.mainWindow,
+           let wc = windowControllers.first(where: { $0.window === main }) { return wc }
+        return windowControllers.last
+    }
 
     @discardableResult
     private func ensureWindowControllerReady() -> MainWindowController {
-        // A cached controller whose window has gone away must not be reused —
-        // reusing it is what leaves the app running with zero windows and no
-        // way to get one back.
-        if let wc = windowController, wc.window != nil {
+        if let wc = activeWindowController {
             if !(wc.window?.isVisible ?? false) { wc.showWindow(nil) }
             return wc
         }
-        let wc = MainWindowController()
-        windowController = wc
-        wc.showWindow(nil)
-        wc.restoreSession()
+        return makeWindow()
+    }
+
+    /// Creates a window and brings it to the Space the user is looking at.
+    /// `.moveToActiveSpace` is set only for the ordering, then removed, so the
+    /// window afterwards stays on the desktop it was opened on instead of
+    /// following the app around.
+    @discardableResult
+    private func makeWindow() -> MainWindowController {
+        pruneClosedWindows()
+        let wc = MainWindowController(cascadingFrom: windowControllers.last?.window)
+        wc.openProjectHandler = { [weak self] url in self?.handleOpen(url) }
+        windowControllers.append(wc)
+
+        if let w = wc.window {
+            w.collectionBehavior.insert(.moveToActiveSpace)
+            wc.showWindow(nil)
+            w.makeKeyAndOrderFront(nil)
+            DispatchQueue.main.async { w.collectionBehavior.remove(.moveToActiveSpace) }
+        } else {
+            wc.showWindow(nil)
+        }
         return wc
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         EditorShortcuts.install()
         buildMenu()
-        _ = ensureWindowControllerReady()
+        restoreWindows()
         NSApp.activate(ignoringOtherApps: true)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
     func applicationWillTerminate(_ notification: Notification) {
-        windowController?.saveSession()
+        pruneClosedWindows()
+        let states = windowControllers.map { $0.sessionState() }
+        UserDefaults.standard.set(states, forKey: Self.sessionWindowsKey)
+    }
+
+    /// Reopens one window per window that was open at quit. Falls back to the
+    /// single-window keys written before multi-window support existed.
+    private func restoreWindows() {
+        let saved = UserDefaults.standard.array(forKey: Self.sessionWindowsKey) as? [[String: Any]] ?? []
+
+        guard !saved.isEmpty else {
+            let wc = makeWindow()
+            wc.restoreSession()
+            return
+        }
+
+        for state in saved {
+            let wc = makeWindow()
+            wc.restore(from: state)
+        }
+        windowControllers.first?.window?.makeKeyAndOrderFront(nil)
     }
 
     func application(_ sender: NSApplication, openFile filename: String) -> Bool {
@@ -56,24 +110,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// `.code-workspace` → workspace, anything else → text tab. A workspace
     /// file that will not parse falls through to being opened as text, which
     /// is what you want when you are looking at a broken one.
+    ///
+    /// Projects get a window each. Opening a second workspace never replaces
+    /// the first — it opens beside it, on whichever desktop you are on.
     @discardableResult
     private func handleOpen(_ url: URL) -> Bool {
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) else { return false }
 
+        let isProject = isDir.boolValue || Workspace.isWorkspaceFile(url)
+
+        if isProject {
+            let target = windowFor(project: url)
+            let opened = isDir.boolValue
+                ? { target.openFolderDirect(url); return true }()
+                : target.openWorkspaceDirect(url)
+
+            if !opened {
+                // Not a usable workspace after all — show the JSON instead.
+                target.openFile(url)
+            }
+            target.window?.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return true
+        }
+
         let wc = ensureWindowControllerReady()
         wc.showWindow(nil)
+        wc.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-
-        if isDir.boolValue {
-            wc.openFolderDirect(url)
-            return true
-        }
-        if Workspace.isWorkspaceFile(url), wc.openWorkspaceDirect(url) {
-            return true
-        }
         wc.openFile(url)
         return true
+    }
+
+    /// Picks the window a project should land in:
+    /// already open somewhere → that window; an untouched empty window → reuse
+    /// it rather than leave a blank one behind; otherwise a new window.
+    private func windowFor(project url: URL) -> MainWindowController {
+        pruneClosedWindows()
+        // Must match openRootIdentity's normalisation, symlinks included.
+        let identity = url.resolvingSymlinksInPath().standardizedFileURL.path
+
+        if let existing = windowControllers.first(where: { $0.openRootIdentity == identity }) {
+            return existing
+        }
+        if let scratch = windowControllers.first(where: { $0.isUnusedScratch }) {
+            return scratch
+        }
+        return makeWindow()
     }
 
     // MARK: - Menu bar
@@ -94,6 +178,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let fileItem = NSMenuItem()
         let fileMenu = NSMenu(title: "File")
         fileMenu.addItem(item("New File", #selector(doNew), "n"))
+        fileMenu.addItem(item("New Window", #selector(doNewWindow), "N"))
         fileMenu.addItem(item("Open...", #selector(doOpen), "o"))
         fileMenu.addItem(item("Open Folder...", #selector(doOpenFolder), "O"))
         fileMenu.addItem(item("Open Workspace...", #selector(doOpenWorkspace), ""))
@@ -238,12 +323,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func openRecentFolder(_ sender: NSMenuItem) {
         guard let url = sender.representedObject as? URL else { return }
-        ensureWindowControllerReady().openFolderDirect(url)
+        handleOpen(url)
     }
 
     @objc private func openRecentWorkspace(_ sender: NSMenuItem) {
         guard let url = sender.representedObject as? URL else { return }
-        ensureWindowControllerReady().openWorkspaceDirect(url)
+        handleOpen(url)
     }
 
     @objc private func doClearRecent() {
@@ -253,6 +338,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - Actions
 
     @objc func doNew()           { ensureWindowControllerReady().newDocument() }
+    @objc func doNewWindow()     { makeWindow() }
     @objc func doOpen()          { ensureWindowControllerReady().openDocument() }
     @objc func doOpenFolder()    { ensureWindowControllerReady().openFolder() }
     @objc func doOpenWorkspace() { ensureWindowControllerReady().openWorkspace() }

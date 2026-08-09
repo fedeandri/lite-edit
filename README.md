@@ -41,7 +41,9 @@ This fork adds three ways to get a project into the sidebar that upstream does n
 - **`.code-workspace` files** — VS Code's workspace format. Each entry in `folders[]` becomes a collapsible root in the tree, so several projects sit side by side. Comments and trailing commas are accepted, as VS Code accepts them; folders that no longer exist are skipped.
 - **`File → Open Workspace…`**, right-click → **Open Workspace** on a `.code-workspace` in the tree, and an **Open Recent → Workspaces** section.
 
-The open workspace is restored on the next launch, and Quick Open (`Cmd+P`) searches every root, prefixing each hit with its root folder name.
+**One window per project.** Opening a second workspace or folder opens a *new* window beside the first rather than replacing what is already there, and it appears on the desktop you are currently looking at. Opening something already open focuses its window instead of duplicating it; an untouched empty window is reused rather than left behind. `File → New Window` (`Cmd+Shift+N`) opens a blank one.
+
+Every open window is restored on the next launch, and Quick Open (`Cmd+P`) searches every root of its own window, prefixing each hit with its root folder name.
 
 ---
 
