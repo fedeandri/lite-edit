@@ -9,6 +9,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private static let sessionWindowsKey = "SessionWindows"
 
+    /// False until `applicationDidFinishLaunching`. An open request that
+    /// arrives while it is false *is* the launch — a double-click in Finder —
+    /// and takes the place of restoring the previous session.
+    private var hasFinishedLaunching = false
+
     /// Drops controllers whose window has been closed. Called before anything
     /// that reasons about "the open windows".
     private func pruneClosedWindows() {
@@ -60,7 +65,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         EditorShortcuts.install()
         buildMenu()
-        restoreWindows()
+        // Finder delivers the double-clicked document before this point, so a
+        // window already existing means the user asked for one specific
+        // project. The rest of the saved session stays closed — opening every
+        // other project alongside it is not what a double-click asked for.
+        pruneClosedWindows()
+        if windowControllers.isEmpty { restoreWindows() }
+        hasFinishedLaunching = true
         NSApp.activate(ignoringOtherApps: true)
     }
 
@@ -83,7 +94,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
 
+        // One window per project on the way back in too. Sessions saved before
+        // the launch-restore fix can hold the same project twice, and reopening
+        // both would rebuild exactly the duplicate `windowFor(project:)` exists
+        // to prevent. Windows holding only loose files have no identity and are
+        // all kept.
+        var restored = Set<String>()
         for state in saved {
+            if let identity = MainWindowController.projectIdentity(in: state),
+               !restored.insert(identity).inserted { continue }
             let wc = makeWindow()
             wc.restore(from: state)
         }
@@ -125,9 +144,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         if isProject {
             let target = windowFor(project: url)
-            let opened = isDir.boolValue
-                ? { target.openFolderDirect(url); return true }()
-                : target.openWorkspaceDirect(url)
+            var opened = false
+
+            // Launched by this double-click: bring the project back as it was
+            // left — tabs and cursor positions — rather than just its file
+            // tree. Only this project's saved window is used; the others are
+            // deliberately left closed.
+            if !hasFinishedLaunching, let state = savedWindowState(forProject: url) {
+                target.restore(from: state)
+                opened = target.openRootIdentity != nil
+            }
+
+            if !opened {
+                opened = isDir.boolValue
+                    ? { target.openFolderDirect(url); return true }()
+                    : target.openWorkspaceDirect(url)
+            }
 
             if !opened {
                 // Not a usable workspace after all — show the JSON instead.
@@ -144,6 +176,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.activate(ignoringOtherApps: true)
         wc.openFile(url)
         return true
+    }
+
+    /// The last session's window for one project, if it had one open.
+    private func savedWindowState(forProject url: URL) -> [String: Any]? {
+        let identity = url.resolvingSymlinksInPath().standardizedFileURL.path
+        let saved = UserDefaults.standard.array(forKey: Self.sessionWindowsKey) as? [[String: Any]] ?? []
+        return saved.first { MainWindowController.projectIdentity(in: $0) == identity }
     }
 
     /// Picks the window a project should land in:

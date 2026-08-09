@@ -172,6 +172,40 @@ read when that array is absent, so upgrading does not lose the open project.
 `MainWindowController.restoreSession()` is exactly that fallback: it collects the flat
 keys into a dictionary and hands it to the same `restore(from:)` the array path uses.
 
+### A double-click replaces the restore, it does not add to it
+
+Restoring the whole session applies only to a launch that asked for nothing in
+particular — the Dock icon, Spotlight, `open -a LiteEdit`. **Launching by double-clicking
+a project or a file opens that one thing and nothing else.** Every other project from the
+last session stays closed; the next plain launch restores whatever was open at the
+following quit.
+
+Finder delivers the document through `application(_:openFile:)` *before*
+`applicationDidFinishLaunching`, so by the time the restore would run a window already
+exists. That is the whole test: `applicationDidFinishLaunching` calls `restoreWindows()`
+only when `windowControllers` is empty.
+
+The clicked project still comes back with its tabs and cursor positions. `handleOpen`
+looks the project up in the saved `SessionWindows` — matching on the same
+symlink-resolved path `openRootIdentity` uses, via
+`MainWindowController.projectIdentity(in:)` — and restores that one dictionary into the
+new window. `hasFinishedLaunching` gates it, so opening a second project *while the app
+runs* is unaffected: it opens the project as it is on disk, not as it was at the last
+quit.
+
+Before this, both halves ran: the double-click opened the workspace and the restore then
+reopened every saved window, **including a second window for the project just clicked**,
+because `restoreWindows()` calls `makeWindow()` directly instead of going through
+`windowFor(project:)`.
+
+### Restore keeps one window per project
+
+`restoreWindows()` still bypasses `windowFor(project:)`, so it enforces the same invariant
+itself: it tracks the identities it has already restored and skips a repeat. Sessions saved
+by the buggy build genuinely contain the same workspace twice, and without the check every
+launch would rebuild that duplicate. Windows that held only loose files have no identity and
+are all restored.
+
 ## Testing notes
 
 There is no test target, and one cannot easily be added on this machine: `swift build`
@@ -189,6 +223,28 @@ window actually had open:
 osascript -e 'tell application "LiteEdit" to quit'; sleep 4
 python3 -c "import plistlib,os; d=plistlib.load(open(os.path.expanduser('~/Library/Preferences/com.liteedit.app.plist'),'rb')); print([w.get('SessionWorkspace') or w.get('SessionFolder') for w in d.get('SessionWindows',[])])"
 ```
+
+Launch behaviour has to be tested cold, which means quitting the copy you are using. To
+avoid that, copy the bundle aside and give it its own identifier — it then has its own
+preferences domain and its own session, and the installed app can keep running:
+
+```sh
+cp -R LiteEdit.app /tmp/LiteEditTest.app
+plutil -replace CFBundleIdentifier -string com.liteedit.apptest /tmp/LiteEditTest.app/Contents/Info.plist
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f /tmp/LiteEditTest.app
+defaults write com.liteedit.apptest SessionWindows '({SessionWorkspace = "/path/a.code-workspace";}, {SessionFolder = "/path/b";})'
+open -a /tmp/LiteEditTest.app /path/a.code-workspace     # the double-click
+osascript -e 'tell application id "com.liteedit.apptest" to quit'; sleep 3
+defaults read com.liteedit.apptest SessionWindows        # what was actually open
+```
+
+Unregister it afterwards (`lsregister -u /tmp/LiteEditTest.app`) or it lingers as a
+handler for folders and `.code-workspace` files.
+
+Launch and quit belong in **one** script, and no test instance may outlive the run that
+started it — each one opens windows on the user's screen and takes focus. `pgrep -lf LiteEdit`
+should list only `/Applications/LiteEdit.app` when the tests are over. This is a project rule:
+[`.claude/rules/close-test-instances.md`](../.claude/rules/close-test-instances.md).
 
 ## Build and install
 

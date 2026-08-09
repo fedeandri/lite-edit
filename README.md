@@ -43,7 +43,9 @@ This fork adds three ways to get a project into the sidebar that upstream does n
 
 **One window per project.** Opening a second workspace or folder opens a *new* window beside the first rather than replacing what is already there, and it appears on the desktop you are currently looking at. Opening something already open focuses its window instead of duplicating it; an untouched empty window is reused rather than left behind. `File → New Window` (`Cmd+Shift+N`) opens a blank one.
 
-Every open window is restored on the next launch, and Quick Open (`Cmd+P`) searches every root of its own window, prefixing each hit with its root folder name.
+Launching the app on its own — the Dock, Spotlight — restores every window that was open at the last quit, each with its tabs and cursor positions. **Double-clicking a project or a file opens that one thing and nothing else**, with the clicked project's own tabs restored; the rest of the last session stays closed until you launch the app plainly again.
+
+Quick Open (`Cmd+P`) searches every root of its own window, prefixing each hit with its root folder name.
 
 ---
 

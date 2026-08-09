@@ -663,6 +663,14 @@ final class MainWindowController: NSWindowController,
         return state
     }
 
+    /// The project a saved window state belongs to, normalised exactly like
+    /// `openRootIdentity` so a saved window can be matched against a path that
+    /// arrived from a double-click. Nil when the window held only loose files.
+    static func projectIdentity(in state: [String: Any]) -> String? {
+        let path = (state[sessionWorkspaceKey] as? String) ?? (state[sessionFolderKey] as? String)
+        return path.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().standardizedFileURL.path }
+    }
+
     /// Restores from the flat UserDefaults keys written by versions before
     /// multi-window support. Only used when no per-window list is present.
     func restoreSession() {
