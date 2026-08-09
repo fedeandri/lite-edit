@@ -32,9 +32,9 @@ cat > "${BUNDLE}/Contents/Info.plist" << 'PLIST'
   <key>CFBundleIdentifier</key>
   <string>com.liteedit.app</string>
   <key>CFBundleVersion</key>
-  <string>1.0.0</string>
+  <string>1.2.0</string>
   <key>CFBundleShortVersionString</key>
-  <string>1.0.0</string>
+  <string>1.2.0</string>
   <key>CFBundleExecutable</key>
   <string>LiteEdit</string>
   <key>CFBundlePackageType</key>
@@ -61,6 +61,31 @@ cat > "${BUNDLE}/Contents/Info.plist" << 'PLIST'
         <string>public.text</string>
         <string>public.plain-text</string>
         <string>public.source-code</string>
+      </array>
+    </dict>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>Folder</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>public.folder</string>
+        <string>public.directory</string>
+      </array>
+    </dict>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>VS Code workspace file</string>
+      <key>CFBundleTypeRole</key>
+      <string>Editor</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>CFBundleTypeExtensions</key>
+      <array>
+        <string>code-workspace</string>
       </array>
     </dict>
   </array>

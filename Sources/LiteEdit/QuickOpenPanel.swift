@@ -150,8 +150,17 @@ final class QuickOpenPanel: NSPanel, NSTextFieldDelegate, NSTableViewDataSource,
     // MARK: - Public
 
     func loadFiles(from rootURL: URL) {
+        loadFiles(fromRoots: [rootURL])
+    }
+
+    /// With more than one root, every path is prefixed by its root's folder
+    /// name so two files with the same relative path stay tellable apart.
+    func loadFiles(fromRoots roots: [URL]) {
         allFiles = []
-        collectFiles(at: rootURL, root: rootURL)
+        let prefixed = roots.count > 1
+        for root in roots {
+            collectFiles(at: root, root: root, prefix: prefixed ? root.lastPathComponent + "/" : "")
+        }
         allFiles.sort { $0.relative.localizedCaseInsensitiveCompare($1.relative) == .orderedAscending }
         filtered = allFiles
         updateHeader()
@@ -170,7 +179,7 @@ final class QuickOpenPanel: NSPanel, NSTextFieldDelegate, NSTableViewDataSource,
 
     // MARK: - File collection
 
-    private func collectFiles(at url: URL, root: URL) {
+    private func collectFiles(at url: URL, root: URL, prefix: String) {
         let fm = FileManager.default
         guard let items = try? fm.contentsOfDirectory(
             at: url,
@@ -183,10 +192,10 @@ final class QuickOpenPanel: NSPanel, NSTextFieldDelegate, NSTableViewDataSource,
             if Self.skippedDirs.contains(name) { continue }
             let isDir = (try? item.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
             if isDir {
-                collectFiles(at: item, root: root)
+                collectFiles(at: item, root: root, prefix: prefix)
             } else {
                 let rel = item.path.replacingOccurrences(of: root.path + "/", with: "")
-                allFiles.append((url: item, relative: rel))
+                allFiles.append((url: item, relative: prefix + rel))
             }
         }
     }

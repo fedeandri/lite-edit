@@ -3,8 +3,10 @@ import Foundation
 enum RecentItems {
     private static let filesKey = "RecentFiles"
     private static let foldersKey = "RecentFolders"
+    private static let workspacesKey = "RecentWorkspaces"
     private static let maxFiles = 15
     private static let maxFolders = 5
+    private static let maxWorkspaces = 5
 
     // MARK: - Read
 
@@ -14,6 +16,10 @@ enum RecentItems {
 
     static var folders: [URL] {
         paths(for: foldersKey).map { URL(fileURLWithPath: $0) }
+    }
+
+    static var workspaces: [URL] {
+        paths(for: workspacesKey).map { URL(fileURLWithPath: $0) }
     }
 
     // MARK: - Write
@@ -26,9 +32,14 @@ enum RecentItems {
         add(url.path, to: foldersKey, max: maxFolders)
     }
 
+    static func addWorkspace(_ url: URL) {
+        add(url.path, to: workspacesKey, max: maxWorkspaces)
+    }
+
     static func clearAll() {
         UserDefaults.standard.removeObject(forKey: filesKey)
         UserDefaults.standard.removeObject(forKey: foldersKey)
+        UserDefaults.standard.removeObject(forKey: workspacesKey)
     }
 
     // MARK: - Internal

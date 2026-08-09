@@ -22,6 +22,10 @@ final class MainWindowController: NSWindowController,
     private var curIdx: Int = -1
     private var sidebarManuallyCollapsed = false
 
+    /// The `.code-workspace` file backing the current sidebar, when one opened
+    /// it. Nil whenever a plain folder is showing.
+    private(set) var workspaceURL: URL?
+
     private var curDoc: Document? {
         guard curIdx >= 0, curIdx < documents.count else { return nil }
         return documents[curIdx]
@@ -325,11 +329,45 @@ final class MainWindowController: NSWindowController,
         showSidebarAndOpen(url)
     }
 
+    /// Opens a `.code-workspace` file. Returns false when the file is not a
+    /// usable workspace, so callers can fall back to opening it as text.
+    @discardableResult
+    func openWorkspaceDirect(_ url: URL) -> Bool {
+        guard let ws = Workspace.load(from: url) else { return false }
+        workspaceURL = url
+        RecentItems.addWorkspace(url)
+        revealSidebar()
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            if self.sidebarVC.view.frame.width < 10 {
+                self.splitView.setPosition(220, ofDividerAt: 0)
+            }
+            self.sidebarVC.openWorkspace(name: ws.name, folders: ws.folders)
+            self.window?.title = "LiteEdit — \(ws.name)"
+        }
+        return true
+    }
+
+    func openWorkspace() {
+        let p = NSOpenPanel()
+        p.canChooseDirectories = false
+        p.canChooseFiles = true
+        p.allowsMultipleSelection = false
+        p.beginSheetModal(for: window!) { [weak self] r in
+            guard r == .OK, let url = p.url, let self = self else { return }
+            if !self.openWorkspaceDirect(url) {
+                let a = NSAlert()
+                a.messageText = "Not a Workspace"
+                a.informativeText = "\(url.lastPathComponent) is not a readable .code-workspace file, or none of the folders it lists exist."
+                a.addButton(withTitle: "OK")
+                a.beginSheetModal(for: self.window!, completionHandler: nil)
+            }
+        }
+    }
+
     private func showSidebarAndOpen(_ url: URL) {
-        sidebarManuallyCollapsed = false
-        sidebarVC.view.isHidden = false
-        splitView.adjustSubviews()
-        splitView.setPosition(220, ofDividerAt: 0)
+        workspaceURL = nil
+        revealSidebar()
         RecentItems.addFolder(url)
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
@@ -338,6 +376,13 @@ final class MainWindowController: NSWindowController,
             }
             self.sidebarVC.openFolder(url)
         }
+    }
+
+    private func revealSidebar() {
+        sidebarManuallyCollapsed = false
+        sidebarVC.view.isHidden = false
+        splitView.adjustSubviews()
+        splitView.setPosition(220, ofDividerAt: 0)
     }
 
     func toggleSidebar() {
@@ -381,10 +426,11 @@ final class MainWindowController: NSWindowController,
 
     func showQuickOpen() {
         guard let w = window else { return }
-        guard let rootURL = sidebarVC.rootFolderURL else {
+        let roots = sidebarVC.rootFolderURLs
+        guard !roots.isEmpty else {
             let a = NSAlert()
             a.messageText = "No Folder Open"
-            a.informativeText = "Open a folder first (Cmd+Shift+O) to use Quick Open."
+            a.informativeText = "Open a folder (Cmd+Shift+O) or a workspace first to use Quick Open."
             a.addButton(withTitle: "OK")
             a.beginSheetModal(for: w, completionHandler: nil)
             return
@@ -407,7 +453,7 @@ final class MainWindowController: NSWindowController,
             let y = w.frame.maxY - panelH - 60
             quickOpen?.setFrame(NSRect(x: x, y: y, width: panelW, height: panelH), display: false)
         }
-        quickOpen?.loadFiles(from: rootURL)
+        quickOpen?.loadFiles(fromRoots: roots)
         quickOpen?.activate()
         w.addChildWindow(quickOpen!, ordered: .above)
         quickOpen?.makeKeyAndOrderFront(nil)
@@ -501,6 +547,16 @@ final class MainWindowController: NSWindowController,
         }
     }
 
+    func sidebarDidRequestOpenWorkspace(_ url: URL) {
+        if !openWorkspaceDirect(url) {
+            let a = NSAlert()
+            a.messageText = "Not a Workspace"
+            a.informativeText = "\(url.lastPathComponent) lists no folder that exists on disk."
+            a.addButton(withTitle: "OK")
+            if let w = window { a.beginSheetModal(for: w, completionHandler: nil) }
+        }
+    }
+
     // MARK: - FindBarDelegate
 
     func findBarNext(_ text: String, caseSensitive: Bool, regex: Bool) {
@@ -530,7 +586,8 @@ final class MainWindowController: NSWindowController,
 
     // MARK: - Session persistence
 
-    private static let sessionFolderKey  = "SessionFolder"
+    private static let sessionFolderKey    = "SessionFolder"
+    private static let sessionWorkspaceKey = "SessionWorkspace"
     private static let sessionFilesKey   = "SessionFiles"
     private static let sessionIndexKey   = "SessionActiveIndex"
     private static let sessionCursorsKey = "SessionCursors"
@@ -539,7 +596,10 @@ final class MainWindowController: NSWindowController,
     func saveSession() {
         saveCursorPosition()
         let ud = UserDefaults.standard
-        ud.set(sidebarVC.rootFolderURL?.path, forKey: Self.sessionFolderKey)
+        // Exactly one of the two is stored: a workspace supersedes its folders,
+        // otherwise the single open folder is saved. `set(nil:)` clears the other.
+        ud.set(workspaceURL?.path, forKey: Self.sessionWorkspaceKey)
+        ud.set(workspaceURL == nil ? sidebarVC.rootFolderURL?.path : nil, forKey: Self.sessionFolderKey)
         ud.set(documents.compactMap { $0.fileURL?.path }, forKey: Self.sessionFilesKey)
         ud.set(curIdx, forKey: Self.sessionIndexKey)
 
@@ -555,13 +615,20 @@ final class MainWindowController: NSWindowController,
 
     func restoreSession() {
         let ud = UserDefaults.standard
-        let folderPath = ud.string(forKey: Self.sessionFolderKey)
+        let folderPath    = ud.string(forKey: Self.sessionFolderKey)
+        let workspacePath = ud.string(forKey: Self.sessionWorkspaceKey)
         let filePaths  = (ud.stringArray(forKey: Self.sessionFilesKey) ?? [])
             .filter { FileManager.default.fileExists(atPath: $0) }
 
-        guard folderPath != nil || !filePaths.isEmpty else { return }
+        guard workspacePath != nil || folderPath != nil || !filePaths.isEmpty else { return }
 
-        if let fp = folderPath, FileManager.default.fileExists(atPath: fp) {
+        // A saved workspace wins; a workspace that no longer parses falls back
+        // to the saved folder rather than leaving the sidebar empty.
+        var restoredSidebar = false
+        if let wp = workspacePath, FileManager.default.fileExists(atPath: wp) {
+            restoredSidebar = openWorkspaceDirect(URL(fileURLWithPath: wp))
+        }
+        if !restoredSidebar, let fp = folderPath, FileManager.default.fileExists(atPath: fp) {
             openFolderDirect(URL(fileURLWithPath: fp))
         }
 

@@ -2,6 +2,7 @@ import AppKit
 
 protocol SidebarDelegate: AnyObject {
     func sidebarDidSelectFile(_ url: URL, inNewTab: Bool)
+    func sidebarDidRequestOpenWorkspace(_ url: URL)
 }
 
 final class FileItem: NSObject {
@@ -81,7 +82,18 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
     private var outlineView: SidebarOutlineView!
     private var headerLabel: NSTextField!
     private var rootItems: [FileItem] = []
-    private(set) var rootFolderURL: URL?
+
+    /// Every folder root currently shown. One entry for a plain folder, one per
+    /// `folders[]` entry for a workspace.
+    private(set) var rootFolderURLs: [URL] = []
+
+    /// First root. Callers that only handle a single folder keep working.
+    var rootFolderURL: URL? { rootFolderURLs.first }
+
+    /// True when `rootItems` holds the roots themselves rather than the single
+    /// root's children. `revealFile` has to walk one level differently.
+    private var isMultiRoot = false
+
     private var suppressSelectionCallback = false
 
     override func loadView() {
@@ -145,7 +157,8 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
     }
 
     func openFolder(_ url: URL) {
-        rootFolderURL = url
+        rootFolderURLs = [url]
+        isMultiRoot = false
         let root = FileItem(url: url, isDir: true)
         root.loadChildrenIfNeeded()
         rootItems = root.children ?? []
@@ -153,17 +166,47 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         outlineView.reloadData()
     }
 
+    /// Shows one collapsible top-level node per folder. A single-folder
+    /// workspace falls back to `openFolder` so the tree looks identical to
+    /// opening that folder directly — only the header names the workspace.
+    func openWorkspace(name: String, folders: [URL]) {
+        guard !folders.isEmpty else { return }
+
+        if folders.count == 1 {
+            openFolder(folders[0])
+            headerLabel.stringValue = name.uppercased()
+            return
+        }
+
+        rootFolderURLs = folders
+        isMultiRoot = true
+        rootItems = folders.map { FileItem(url: $0, isDir: true) }
+        headerLabel.stringValue = name.uppercased()
+        outlineView.reloadData()
+        for item in rootItems { outlineView.expandItem(item) }
+    }
+
     /// Expand parent directories and select the row matching `url`.
     func revealFile(_ url: URL) {
-        guard let root = rootFolderURL else { return }
+        let match = rootFolderURLs.first {
+            url.path.hasPrefix($0.path.hasSuffix("/") ? $0.path : $0.path + "/")
+        }
+        guard let root = match else { return }
         let rootPath = root.path.hasSuffix("/") ? root.path : root.path + "/"
-        guard url.path.hasPrefix(rootPath) else { return }
 
         let relative = String(url.path.dropFirst(rootPath.count))
         let components = relative.split(separator: "/").map(String.init)
         guard !components.isEmpty else { return }
 
-        var currentItems = rootItems
+        var currentItems: [FileItem]
+        if isMultiRoot {
+            guard let rootItem = rootItems.first(where: { $0.url.path == root.path }) else { return }
+            rootItem.loadChildrenIfNeeded()
+            outlineView.expandItem(rootItem)
+            currentItems = rootItem.children ?? []
+        } else {
+            currentItems = rootItems
+        }
 
         for (i, name) in components.enumerated() {
             guard let match = currentItems.first(where: { $0.name == name }) else { return }
@@ -290,6 +333,15 @@ extension SidebarViewController: NSMenuDelegate {
         guard row >= 0, let fi = outlineView.item(atRow: row) as? FileItem else { return }
 
         if !fi.isDirectory {
+            // Clicking a .code-workspace opens it as text, matching VS Code.
+            // This is the deliberate way to load it as a workspace instead.
+            if Workspace.isWorkspaceFile(fi.url) {
+                let wsItem = NSMenuItem(title: "Open Workspace", action: #selector(contextOpenWorkspace(_:)), keyEquivalent: "")
+                wsItem.target = self
+                menu.addItem(wsItem)
+                menu.addItem(.separator())
+            }
+
             let openItem = NSMenuItem(title: "Open", action: #selector(contextOpen(_:)), keyEquivalent: "")
             openItem.target = self
             menu.addItem(openItem)
@@ -310,6 +362,13 @@ extension SidebarViewController: NSMenuDelegate {
         let row = outlineView.clickedRow
         guard row >= 0, let fi = outlineView.item(atRow: row) as? FileItem, !fi.isDirectory else { return }
         sidebarDelegate?.sidebarDidSelectFile(fi.url, inNewTab: false)
+    }
+
+    @objc private func contextOpenWorkspace(_ sender: Any?) {
+        let row = outlineView.clickedRow
+        guard row >= 0, let fi = outlineView.item(atRow: row) as? FileItem,
+              !fi.isDirectory, Workspace.isWorkspaceFile(fi.url) else { return }
+        sidebarDelegate?.sidebarDidRequestOpenWorkspace(fi.url)
     }
 
     @objc private func contextRevealInFinder(_ sender: Any?) {

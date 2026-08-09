@@ -33,6 +33,18 @@ The fastest way to open, browse, and quick-edit code on macOS — a native edito
 
 ---
 
+## Fork: folders and workspaces
+
+This fork adds three ways to get a project into the sidebar that upstream does not have:
+
+- **Double-click or `open -a LiteEdit <folder>`** — folders now reach the app at all. Upstream declares no folder type in `Info.plist`, so macOS silently dropped the request and nothing happened.
+- **`.code-workspace` files** — VS Code's workspace format. Each entry in `folders[]` becomes a collapsible root in the tree, so several projects sit side by side. Comments and trailing commas are accepted, as VS Code accepts them; folders that no longer exist are skipped.
+- **`File → Open Workspace…`**, right-click → **Open Workspace** on a `.code-workspace` in the tree, and an **Open Recent → Workspaces** section.
+
+The open workspace is restored on the next launch, and Quick Open (`Cmd+P`) searches every root, prefixing each hit with its root folder name.
+
+---
+
 ## Who This Is For
 
 LiteEdit is for macOS developers who want a **fast, zero-overhead editor** alongside their main IDE. Use it when you want to:
