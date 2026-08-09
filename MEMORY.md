@@ -1,9 +1,15 @@
 # Project Memory
 
 ## Current State
-Native macOS code editor (~3,000 lines Swift/AppKit). Single binary under 1 MB. Builds with `swift build`. Main branch, tagged v1.1.6.
+**This is `fedeandri/lite-edit`, a fork of `arietan/lite-edit`.** Forked 2026-08-09 from upstream `0787bd0` to add folder and `.code-workspace` opening plus one window per project. `upstream` remote points at `arietan/lite-edit`. **Do not send changes upstream** — the owner has decided this fork stays private to them; do not open a PR against `arietan/lite-edit` unless explicitly asked.
+
+Native macOS code editor (~3,500 lines Swift/AppKit). Single binary under 1 MB (816 KB as built). Builds with `swift build` via `./build.sh`; **full Xcode is not installed and is not needed** — Command Line Tools suffice, but no XCTest target can be built here (`unable to lookup item 'PlatformPath'`).
+
+Fork additions live in `Sources/LiteEdit/Workspace.swift` (new) and in changes to `AppDelegate`, `MainWindowController`, `SidebarViewController`, `QuickOpenPanel`, `RecentItems`, `build.sh`. Design and rationale: **`docs/workspaces-and-windows.md`** — read it before touching project opening or window management.
 
 ## Recent Changes
+- 2026-08-09: **v1.3.0 (fork)** — one window per project. `AppDelegate` holds `[MainWindowController]`; `windowFor(project:)` focuses an already-open project, else reuses an untouched empty window, else opens a new one. New windows use `.moveToActiveSpace` (inserted, ordered front, then removed) so they land on the current desktop without following the app between Spaces afterwards. Session persistence became per-window (`SessionWindows` array; old flat keys still read as a fallback). `File → New Window` (Cmd+Shift+N). Three multi-window bugs fixed: symlink-insensitive identity comparison (`/tmp` vs `/private/tmp` — `standardizedFileURL` does not resolve symlinks, so every reopen duplicated a window), the app-wide `Cmd+P` monitor firing in all windows at once, and one shared `setFrameAutosaveName` making windows fight over a single rect.
+- 2026-08-09: **v1.2.0 (fork)** — open folders and `.code-workspace` files. Upstream could not open folders at all: `Info.plist` declared only text UTIs so LaunchServices dropped the request before the app saw it, and `application(_:openFile:)` never checked `isDirectory`. `openFolderDirect()` already existed and was simply never wired to an open event. Added `public.folder`/`public.directory` and a `code-workspace` document type at `LSHandlerRank: Alternate` (so installing does not steal an existing default), a JSONC-tolerant workspace parser, a multi-root sidebar, Quick Open across all roots, `applicationShouldHandleReopen`, and a fix for `ensureWindowControllerReady()` reusing a controller whose window was gone (which left the app running with zero windows).
 - 2026-04-21: **Released v1.1.6** — "Reveal in Finder" context menu for files and folders in the sidebar. Landing page and Homebrew cask updated.
 - 2026-04-17: **Released v1.1.3** — large-file lazy highlighting, markdown live-rehighlight, tab-switch viewport restoration. Landing page updated. Publish-release skill created (replaces old release rule).
 - 2026-04-14: Tab-switch cursor reset fix (v1.1.2) — two issues: (1) cursor jumped to line 1 because `replaceTextStorage()` triggers a deferred layout pass that resets NSTextView's selection after synchronous `restoreCursorPosition()`; fixed with `deferredRestoreCursor()` (async dispatch). (2) Scroll clamped to ~line 135 for deep positions because NSLayoutManager lazy layout left the text view frame too short; fixed with `ensureLayout(forCharacterRange:)` up to the saved cursor offset before scrolling.
@@ -14,6 +20,11 @@ Native macOS code editor (~3,000 lines Swift/AppKit). Single binary under 1 MB. 
 - 2026-04-09: Added auto-indent on Enter — new line inherits leading whitespace (spaces/tabs) from the current line. Implemented via `textView(_:shouldChangeTextIn:replacementString:)` delegate in `EditorViewController.swift`.
 
 ## Architecture Decisions
+- **Fork:** every path that opens a *project* (folder or workspace) funnels through `AppDelegate.handleOpen(_:)` — double-click, `open -a`, menus, Open Recent, and the sidebar context menu. Menu and sidebar paths reach it via `MainWindowController.openProjectHandler`, a closure the delegate installs on each window. Adding a new entry point means routing it there, not reimplementing placement.
+- **Fork:** paths compared for "is this already open?" must go through `resolvingSymlinksInPath()`. Apple Events deliver `/tmp/…`, the session store returns `/private/tmp/…`, and `standardizedFileURL` does not reconcile them.
+- **Fork:** `.code-workspace` is JSONC — comments and trailing commas are legal and `JSONSerialization` rejects them. `Workspace.stripJSONComments` handles it with a string-literal-aware scanner.
+- **Fork:** verify multi-window behaviour by quitting and reading `SessionWindows` from `~/Library/Preferences/com.liteedit.app.plist`. `System Events`/AppleScript reports stale and missing window counts against this ad-hoc-signed bundle and will mislead you.
+- **Fork:** re-run `lsregister -f /Applications/LiteEdit.app` after any `Info.plist` document-type change, or macOS keeps serving the old claims and the change looks broken.
 - Pure AppKit + TextKit 1 (forced via `_ = textView.layoutManager`), no SwiftUI
 - Global `NSEvent.addLocalMonitorForEvents` in `EditorShortcuts` handles shortcuts (Option+Up/Down, Cmd+Shift+K, Cmd+Shift+L)
 - Multi-cursor edits bypass `didChangeText()` to avoid selection collapse from rehighlighting
